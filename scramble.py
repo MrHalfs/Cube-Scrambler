@@ -1,11 +1,11 @@
 
 import random
+import time
 import tkinter as tk
 from tkinter import ttk, messagebox
 
 # ---- Original data ----
 SCRAMBLE_OPTIONS = ["R","R'","R2","U","U'","U2","F","F'","F2","L","L'","L2","D","D'","D2","B","B'","B2"]
-
 LEFT_SCRAMBLE = ["L","L'","L2","U","U'","U2"]
 RIGHT_SCRAMBLE = ["R","R'","R2","U","U'","U2"]
 
@@ -30,7 +30,7 @@ class ScrambleUI(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Cube Scrambler")
-        self.geometry("520x320")
+        self.geometry("580x380")
         self.resizable(False, False)
 
         # State
@@ -39,12 +39,24 @@ class ScrambleUI(tk.Tk):
         self.last_list = SCRAMBLE_OPTIONS  # default
         self.last_len = 15
 
+        # Timer state
+        self.timer_running = False
+        self.timer_start = 0.0
+        self.timer_after_id = None
+
         # --- Layout ---
         self._build_controls()
         self._build_output()
+        self._build_timer()
 
-        # Keyboard shortcut for Next
-        self.bind("<Return>", lambda e: self.on_next())
+        # Keyboard shortcuts
+        # Return = Next scramble
+        self.bind("<Return>", lambda e: (self.on_next(), "break"))
+        # Space = start/stop timer
+        self.bind("<space>", self.on_space)
+
+        # Generate an initial scramble
+        self.on_generate()
 
     def _build_controls(self):
         frm = ttk.LabelFrame(self, text="Options")
@@ -80,10 +92,9 @@ class ScrambleUI(tk.Tk):
 
     def _build_output(self):
         out_frame = ttk.LabelFrame(self, text="Scramble")
-        out_frame.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        out_frame.pack(fill="both", expand=True, padx=12, pady=(0, 8))
 
-        
-        self.output = tk.Text(out_frame, height=4, wrap="word", font=("Helvetica", 20))
+        self.output = tk.Text(out_frame, height=4, wrap="word", font=("Helvetica", 22))
         self.output.pack(fill="both", expand=True, padx=8, pady=8)
         self.output.configure(state="disabled")
 
@@ -91,11 +102,20 @@ class ScrambleUI(tk.Tk):
         self.output.tag_configure("prime", foreground="blue")
         self.output.tag_configure("normal", foreground="black")
 
-
         controls = ttk.Frame(out_frame)
         controls.pack(fill="x", padx=8, pady=4)
         ttk.Button(controls, text="Copy to Clipboard", command=self.copy_to_clipboard).pack(side="left")
         ttk.Button(controls, text="Clear", command=self.clear_output).pack(side="left", padx=6)
+
+    def _build_timer(self):
+        timer_frame = ttk.LabelFrame(self, text="Timer")
+        timer_frame.pack(fill="x", padx=12, pady=(0, 12))
+
+        self.timer_label = ttk.Label(timer_frame, text="00.000 s", font=("Helvetica", 18))
+        self.timer_label.pack(side="left", padx=8, pady=8)
+
+        hint = ttk.Label(timer_frame, text="Press Space to start/stop. Press Enter for Next.", foreground="#666")
+        hint.pack(side="left", padx=12)
 
     def _resolve_list(self):
         s_type = self.scramble_type.get().lower()
@@ -105,7 +125,16 @@ class ScrambleUI(tk.Tk):
             return RIGHT_SCRAMBLE
         return SCRAMBLE_OPTIONS
 
-    
+    # ---------- Scramble actions ----------
+    def _render_scramble(self, scramble_text: str):
+        """Render the scramble with color tags (prime in blue)."""
+        self.output.configure(state="normal")
+        self.output.delete("1.0", "end")
+        for move in scramble_text.split(", "):
+            tag = "prime" if "'" in move else "normal"
+            self.output.insert("end", move + " ", tag)
+        self.output.configure(state="disabled")
+
     def on_generate(self):
         try:
             lst = self._resolve_list()
@@ -115,35 +144,56 @@ class ScrambleUI(tk.Tk):
             self.last_list = lst
             self.last_len = n
 
-            self.output.configure(state="normal")
-            self.output.delete("1.0", "end")
-            for move in scramble.split(", "):
-                tag = "prime" if "'" in move else "normal"
-                self.output.insert("end", move + " ", tag)
-            self.output.configure(state="disabled")
+            self._render_scramble(scramble)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to generate scramble:\n{e}")
 
-
-    
     def on_next(self):
         # Use last chosen list/length again
         try:
             scramble = generate_scramble(self.last_list, self.last_len)
-
-            self.output.configure(state="normal")
-            self.output.delete("1.0", "end")
-
-            # Insert each move with a tag: prime -> blue, normal -> black
-            for move in scramble.split(", "):
-                tag = "prime" if "'" in move else "normal"
-                self.output.insert("end", move + " ", tag)
-
-            self.output.configure(state="disabled")
+            self._render_scramble(scramble)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to generate next scramble:\n{e}")
 
+    # ---------- Timer actions ----------
+    def on_space(self, event):
+        """Start/stop the timer on space press, and generate a new scramble on stop."""
+        # Prevent default Space behavior (e.g., activating buttons)
+        # Returning "break" stops event propagation.
+        if not self.timer_running:
+            # Start timer
+            self.timer_running = True
+            self.timer_start = time.perf_counter()
+            self.timer_label.configure(text="00.000 s")
+            self._schedule_timer_update()
+        else:
+            # Stop timer
+            self.timer_running = False
+            if self.timer_after_id is not None:
+                try:
+                    self.after_cancel(self.timer_after_id)
+                except Exception:
+                    pass
+                self.timer_after_id = None
 
+            elapsed = time.perf_counter() - self.timer_start
+            self.timer_label.configure(text=f"{elapsed:0.3f} s")
+
+            # Auto-generate a new scramble after stopping
+            self.on_next()
+
+        return "break"
+
+    def _schedule_timer_update(self):
+        """Update the timer label every ~10ms while running."""
+        if self.timer_running:
+            elapsed = time.perf_counter() - self.timer_start
+            self.timer_label.configure(text=f"{elapsed:0.3f} s")
+            # Schedule next update
+            self.timer_after_id = self.after(10, self._schedule_timer_update)
+
+    # ---------- Clipboard / Output ----------
     def copy_to_clipboard(self):
         try:
             text = self.output.get("1.0", "end").strip()
